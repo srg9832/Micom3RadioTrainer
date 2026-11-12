@@ -72,7 +72,7 @@ async def disconnect_client(client_id: str) -> None:
     if not channels[channel]:
         channels.pop(channel, None)
     await broadcast({'type': 'peer-left', 'peer_id': client_id, 'channel': channel})
-    await broadcast(public_state()
+    await broadcast(public_state())
 
 
 @app.get('/')
