@@ -1,0 +1,55 @@
+name: Import verified R7 frontend
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/import-r7.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  import-static:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+
+      - name: Download radio interface from running development server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p static
+          base="https://nonconfiscable-latrice-subproportionally.ngrok-free.dev"
+          for name in index.html app.js micom3t-off.jpg micom3t-screen-on.jpg; do
+            curl --fail --silent --show-error --location --retry 3 --max-time 60 \
+              --header 'ngrok-skip-browser-warning: true' \
+              "$base/static/$name" --output "static/$name"
+          done
+
+      - name: Verify the archived R7 file hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/r7-checksums.txt <<'CHECKSUMS'
+          55523421b1c2423c057a608ce257109053ba84e83dba3ec0a3c21e7fb4e50245  static/index.html
+          6e4b5dd65d1626120edf505e03ffe7946df2a9235970d5f7464f05aa1bd320ca  static/app.js
+          daba5fa2579625757dde5c812a92efd8117dff56194a949ada3404b32c1cbc2e  static/micom3t-off.jpg
+          c588ed64f2d16efc9fd1f634dcd2a9c8dbb81cb296caa723e7178653bd21c4e9  static/micom3t-screen-on.jpg
+          CHECKSUMS
+          sha256sum --check /tmp/r7-checksums.txt
+
+      - name: Commit the verified R7 frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/index.html static/app.js static/micom3t-off.jpg static/micom3t-screen-on.jpg
+          if ! git diff --cached --quiet; then
+            git commit -m 'Add verified R7 MICOM-3T web interface and radio images'
+            git push origin HEAD:main
+          fi
