@@ -25,6 +25,6 @@ Receivers should hear transmissions only when their radio matches the sender's f
 
 ## Notes
 
-This is the R7 development baseline. The previous ZIP is `radio_trainer_micom3t_comm_logic_r7.zip`. The application code and original image assets must be uploaded for the repository to be runnable. WebRTC with STUN alone may fail across NAT; TURN will be needed for some users.
+This is the R7 development baseline. The previous ZIP is `radio_trainer_micom3t_comm_logic_r7.zip`. All R7 code and both original radio images are committed in this repository. WebRTC with STUN alone may fail across NAT; TURN will be needed for some users.
 
 This repository is for source control; the actual trainer is hosted on your computer through Python and ngrok.
