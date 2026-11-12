@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MICOM-3T Radio Trainer</title>
+  <style>
+    :root {
+      --bg: #d9dadd;
+      --panel: #1e2328;
+      --text: #101418;
+      --muted: #5a646e;
+      --lcd-ink: #0f180c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Arial, Helvetica, sans-serif;
+      color: var(--text);
+      background: linear-gradient(180deg, #eef0f3, var(--bg));
+    }
+    .page {
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .headline { margin-bottom: 16px; }
+    .headline h1 { margin: 0 0 6px; font-size: 28px; }
+    .headline p { margin: 0; color: var(--muted); }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(860px, 1fr) 360px;
+      gap: 24px;
+      align-items: start;
+    }
+
+    .radio-stage {
+      position: relative;
+      background: linear-gradient(180deg, #f7f8fa, #d7dade);
+      border-radius: 24px;
+      padding: 18px 18px 26px;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.12);
+      overflow: hidden;
+    }
+
+    .radio-wrap {
+      position: relative;
+      width: 100%;
+      max-width: 1150px;
+      margin: 0 auto;
+      aspect-ratio: 1854 / 1041;
+      user-select: none;
+    }
+
+    .radio-image {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      pointer-events: none;
+    }
+
+    .hotspot {
+      position: absolute;
+      background: rgba(255,255,255,0.02);
+      border: none;
+      cursor: pointer;
+      border-radius: 10px;
+      transition: background 0.15s ease, transform 0.05s ease;
+    }
+    .hotspot:hover { background: rgba(76, 88, 102, 0.12); }
+    .hotspot:active { transform: scale(0.98); }
+    .hotspot:focus-visible { outline: 2px solid rgba(0, 120, 255, 0.7); }
+
+    .screen-shell {
+      position: absolute;
+      left: 41.2%;
+      top: 42.8%;
+      width: 27.4%;
+      height: 28.7%;
+      border-radius: 6px;
+      overflow: hidden;
+      background: #b9c89d;
+      box-shadow: inset 0 0 0 3px rgba(15, 27, 11, 0.28), 0 0 2px rgba(0,0,0,0.4);
+    }
+
+    .screen-glass {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(120deg, rgba(255,255,255,0.08), transparent 26%), linear-gradient(180deg, rgba(255,255,255,0.04), transparent 36%, rgba(0,0,0,0.03));
+      pointer-events: none;
+      z-index: 4;
+    }
+
+    .lcd {
+      position: absolute;
+      inset: 6px;
+      border-radius: 10px;
+      overflow: hidden;
+      color: var(--lcd-ink);
+      background: linear-gradient(180deg, #d7d9d3, #cfd2ca);
+      font-family: "Courier New", Courier, monospace;
+      font-weight: 700;
+      z-index: 2;
+    }
+    .lcd.off {
+      background: linear-gradient(180deg, #5d6958, #4f574b);
+      color: rgba(24,30,23,0.3);
+    }
+
+    .micom-label {
+      position: absolute;
+      top: 6px;
+      left: 24px;
+      font-family: Arial, Helvetica, sans-serif;
+      font-weight: 700;
+      font-size: clamp(8px, 0.7vw, 11px);
+      color: rgba(255,255,255,0.85);
+      z-index: 5;
+      letter-spacing: 0.02em;
+    }
+
+    .lcd-main {
+      position: absolute;
+      inset: 0;
+      padding: 9px 13px 10px 10px;
+    }
+
+    .lcd-divider {
+      position: absolute;
+      top: 10px;
+      bottom: 8px;
+      left: 77%;
+      width: 3px;
+      background: rgba(15,24,12,0.95);
+    }
+
+    .lcd-left {
+      position: absolute;
+      left: 10px;
+      right: 24%;
+      top: 10px;
+      bottom: 8px;
+    }
+
+    .row-top {
+      display: flex;
+      align-items: baseline;
+      gap: 18px;
+      font-size: clamp(16px, 1.95vw, 38px);
+      line-height: 1;
+      letter-spacing: 0.04em;
+    }
+    .freq-line {
+      margin-top: 5px;
+      font-size: clamp(18px, 1.95vw, 25px);
+      line-height: 1;
+      letter-spacing: 0.00em;
+    }
+    .center-status {
+      position: absolute;
+      left: 52%;
+      top: 55%;
+      transform: translate(-50%, -50%);
+      font-size: clamp(15px, 1.1vw, 24px);
+      letter-spacing: 0.04em;
+    }
+    .mode-line {
+      margin-top: 6px;
+      font-size: clamp(14px, 1.05vw, 20px);
+      line-height: 1;
+      letter-spacing: 0.01em;
+      min-height: 1em;
+    }
+    .status-strip {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+    .status-indicator {
+      position: absolute;
+      font-size: clamp(12px, 0.9vw, 18px);
+      letter-spacing: 0.02em;
+      line-height: 1;
+      min-width: 1ch;
+      white-space: nowrap;
+      text-align: left;
+    }
+    .status-indicator:empty {
+      display: none;
+    }
+    #lcdSq { left: 2px; bottom: 3px; }
+    #lcdAgc { left: 44px; bottom: 3px; }
+    #lcdBw { left: 124px; bottom: 3px; }
+    #lcdClip { left: 2px; bottom: 22px; }
+    #lcdNb { left: 62px; bottom: 22px; }
+    #lcdMon { left: 102px; bottom: 22px; }
+    .bottom-status {
+      position: absolute;
+      left: 2px;
+      bottom: 3px;
+      display: flex;
+      gap: 12px;
+      font-size: clamp(13px, 0.95vw, 20px);
+      letter-spacing: 0.02em;
+    }
+    .lcd-right {
+      position: absolute;
+      left: 79.5%;
+      right: 6px;
+      top: 8px;
+      bottom: 8px;
+      display: grid;
+      grid-template-rows: repeat(4, 1fr);
+      align-items: center;
+      justify-items: end;
+      font-size: clamp(14px, 1vw, 22px);
+      line-height: 1;
+      letter-spacing: 0.02em;
+      text-align: right;
+    }
+    .soft { min-height: 1em; width: 100%; }
+    .soft.empty { opacity: 0; }
+
+    .screen-message {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: clamp(18px, 2.2vw, 38px);
+      letter-spacing: 0.12em;
+      z-index: 3;
+      background: linear-gradient(180deg, #d7d9d3, #cfd2ca);
+      color: var(--lcd-ink);
+    }
+
+    .tx-led, .aux-led {
+      position: absolute;
+      width: 1.35%;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.2);
+    }
+    .tx-led { left: 74.3%; top: 41.2%; background: #6b757d; }
+    .tx-led.active {
+      background: #f24a3d;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.25), 0 0 10px rgba(242, 74, 61, 0.9), 0 0 20px rgba(242, 74, 61, 0.6);
+    }
+    .aux-led { left: 78.3%; top: 41.2%; background: #6b757d; }
+    .aux-led.active {
+      background: #7ee787;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.25), 0 0 10px rgba(126,231,135,0.9), 0 0 18px rgba(126,231,135,0.55);
+    }
+
+    .ptt-panel {
+      position: absolute;
+      left: 6px;
+      bottom: 8px;
+      display: grid;
+      gap: 10px;
+      z-index: 5;
+    }
+    .ptt-btn, .panel-btn {
+      border: none;
+      border-radius: 14px;
+      padding: 14px 16px;
+      min-width: 132px;
+      background: #262c31;
+      color: #f5f7fa;
+      font-weight: 700;
+      box-shadow: 0 8px 18px rgba(0,0,0,0.22);
+      cursor: pointer;
+    }
+    .ptt-btn.tx { background: #b92d22; }
+    .panel-btn.secondary { background: #3a434b; }
+
+    .sidecard {
+      background: rgba(255,255,255,0.82);
+      border-radius: 20px;
+      padding: 18px;
+      box-shadow: 0 10px 24px rgba(0,0,0,0.1);
+    }
+    .sidecard h2, .sidecard h3 { margin: 0 0 10px; }
+    .sidecard p { margin: 0 0 10px; }
+    .status-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .pill {
+      border-radius: 999px;
+      padding: 8px 12px;
+      background: #eef1f4;
+      font-size: 14px;
+    }
+    .radio-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .radio-member {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #f5f7f9;
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 14px;
+    }
+    .log {
+      min-height: 170px;
+      max-height: 280px;
+      overflow-y: auto;
+      background: #11161a;
+      color: #dce6ef;
+      border-radius: 14px;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+    .helper { color: var(--muted); font-size: 14px; }
+    .keymap {
+      display: grid;
+      gap: 8px;
+      font-size: 14px;
+      color: #2b353f;
+    }
+    .keymap strong { display: inline-block; min-width: 92px; }
+
+    @media (max-width: 1250px) {
+      .layout { grid-template-columns: 1fr; }
+      .radio-stage { overflow-x: auto; }
+      .radio-wrap { min-width: 860px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="headline">
+      <h1>MICOM-3T Internet Radio Trainer R7</h1>
+      <p>Updated channel default screen, boot self-test, softkey paging, and MENU/CHAN workflow based on your screenshots and notes.</p>
+    </div>
+
+    <div class="layout">
+      <div class="radio-stage">
+        <div class="radio-wrap" aria-label="MICOM-3T radio front panel">
+          <img class="radio-image" src="/static/micom3t-off.jpg" alt="MICOM-3T radio" />
+
+          <div id="txLed" class="tx-led" aria-hidden="true"></div>
+          <div id="connLed" class="aux-led" aria-hidden="true"></div>
+
+          <div id="screenShell" class="screen-shell">
+            <div class="micom-label">MICOM-3</div>
+            <div id="lcd" class="lcd off">
+              <div class="lcd-main">
+                <div id="lcdDivider" class="lcd-divider"></div>
+                <div class="lcd-left">
+                  <div class="row-top"><span id="lcdTopLeft">CH</span><span id="lcdTopRight">1</span></div>
+                  <div id="lcdFreq" class="freq-line">F 14,000.00</div>
+                  <div id="lcdFlashLine" class="freq-line" style="display:none;"></div>
+                  <div id="lcdModeLine" class="mode-line"></div>
+                  <div id="lcdBwLine" class="mode-line"></div>
+                  <div id="lcdBand" class="center-status">USB</div>
+                  <div class="status-strip">
+                    <span id="lcdSq" class="status-indicator">SQ</span>
+                    <span id="lcdAgc" class="status-indicator"></span>
+                    <span id="lcdBw" class="status-indicator"></span>
+                    <span id="lcdClip" class="status-indicator"></span>
+                    <span id="lcdNb" class="status-indicator"></span>
+                    <span id="lcdMon" class="status-indicator"></span>
+                  </div>
+                  <div class="bottom-status" style="display:none;">
+                    <span id="lcdBottom1"></span>
+                    <span id="lcdBottom2"></span>
+                    <span id="lcdBottom3"></span>
+                  </div>
+                  <div id="lcdCenter" class="center-status" style="display:none;"></div>
+                </div>
+                <div class="lcd-right">
+                  <div id="soft1" class="soft empty">&nbsp;</div>
+                  <div id="soft2" class="soft">BAND</div>
+                  <div id="soft3" class="soft">SQ</div>
+                  <div id="soft4" class="soft">DSP</div>
+                </div>
+              </div>
+            </div>
+            <div id="screenMessage" class="screen-message">OFF</div>
+            <div class="screen-glass"></div>
+          </div>
+
+          <button class="hotspot" id="powerKnob" style="left: 27.4%; top: 41.4%; width: 6.4%; height: 11%; border-radius: 50%;" aria-label="Power"></button>
+          <button class="hotspot" data-action="up" style="left: 34.5%; top: 47.6%; width: 5.2%; height: 5.8%; clip-path: polygon(50% 0, 100% 100%, 0 100%);" aria-label="Up"></button>
+          <button class="hotspot" data-action="left" style="left: 32%; top: 54%; width: 4.6%; height: 5.8%; clip-path: polygon(0 50%, 100% 0, 100% 100%);" aria-label="Left"></button>
+          <button class="hotspot" data-action="right" style="left: 38%; top: 54%; width: 4.6%; height: 5.8%; clip-path: polygon(0 0, 100% 50%, 0 100%);" aria-label="Right"></button>
+          <button class="hotspot" data-action="down" style="left: 34.5%; top: 60.55%; width: 4.2%; height: 5.8%; clip-path: polygon(0 0, 100% 0, 50% 100%);" aria-label="Down"></button>
+          <button class="hotspot" data-action="more" style="left: 17.55%; top: 53.5%; width: 4%; height: 7%; border-radius: 12px;" aria-label="More"></button>
+
+          <button class="hotspot" data-action="f1" style="left: 70%; top: 49%; width: 2.4%; height: 3%; border-radius: 50%;" aria-label="F1"></button>
+          <button class="hotspot" data-action="f2" style="left: 70%; top: 55%; width: 2.4%; height: 3%; border-radius: 50%;" aria-label="F2"></button>
+          <button class="hotspot" data-action="f3" style="left: 70%; top: 59%; width: 2.4%; height: 3%; border-radius: 50%;" aria-label="F3"></button>
+          <button class="hotspot" data-action="f4" style="left: 70%; top: 65%; width: 2.4%; height: 3%; border-radius: 50%;" aria-label="F4"></button>
+
+          <button class="hotspot" data-action="digit-1" style="left: 74%; top: 45%; width: 2%; height: 5%;" aria-label="1"></button>
+          <button class="hotspot" data-action="digit-2" style="left: 78.5%; top: 45%; width: 2%; height: 5%;" aria-label="2"></button>
+          <button class="hotspot" data-action="digit-3" style="left: 82%; top: 45%; width: 2%; height: 5%;" aria-label="3"></button>
+          <button class="hotspot" data-action="menu" style="left: 86%; top: 45%; width: 3%; height: 5%; border-radius: 12px;" aria-label="Menu"></button>
+
+          <button class="hotspot" data-action="digit-4" style="left: 74%; top: 52%; width: 2%; height: 5%;" aria-label="4"></button>
+          <button class="hotspot" data-action="digit-5" style="left: 78.5%; top: 52%; width: 2%; height: 5%;" aria-label="5"></button>
+          <button class="hotspot" data-action="digit-6" style="left: 82%; top: 52%; width: 2%; height: 5%;" aria-label="6"></button>
+          <button class="hotspot" data-action="esc" style="left: 86%; top: 52%; width: 3%; height: 5%; border-radius: 12px;" aria-label="Escape"></button>
+
+          <button class="hotspot" data-action="digit-7" style="left: 74%; top: 59%; width: 2%; height: 5%;" aria-label="7"></button>
+          <button class="hotspot" data-action="digit-8" style="left: 78.5%; top: 59%; width: 2%; height: 5%;" aria-label="8"></button>
+          <button class="hotspot" data-action="digit-9" style="left: 82%; top: 59%; width: 2%; height: 5%;" aria-label="9"></button>
+          <button class="hotspot" data-action="noop" style="left: 86%; top: 59%; width: 3%; height: 5%; border-radius: 12px;" aria-label="Alarm GPS"></button>
+
+          <button class="hotspot" data-action="noop" style="left: 74%; top: 65%; width: 2%; height: 5%;" aria-label="Star"></button>
+          <button class="hotspot" data-action="digit-0" style="left: 78.5%; top: 65%; width: 2%; height: 5%;" aria-label="0"></button>
+          <button class="hotspot" data-action="noop" style="left: 82%; top: 65%; width: 2%; height: 5%;" aria-label="Hash"></button>
+          <button class="hotspot" data-action="enter" style="left: 86%; top: 65%; width: 3%; height: 5%; border-radius: 12px;" aria-label="Enter"></button>
+
+          <div class="ptt-panel">
+            <button id="pttButton" class="ptt-btn" type="button">Hold PTT</button>
+            <button id="connectButton" class="panel-btn secondary" type="button">Power & Connect</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sidecard">
+        <h2>Session</h2>
+        <div class="status-row">
+          <div class="pill">Status: <strong id="connectionStatus">Offline</strong></div>
+          <div class="pill">Mode: <strong id="sideMode">OFF</strong></div>
+        </div>
+        <p>
+          <label>
+            Radio name<br />
+            <input id="nameInput" type="text" maxlength="24" placeholder="Your radio callsign" style="width:100%; padding:10px 12px; border-radius: 10px; border: 1px solid #c9d1d8; margin-top: 6px;" />
+          </label>
+        </p>
+<h3>People on Current Channel</h3>
+        <div id="peerList" class="radio-list"></div>
+        <h3 style="margin-top:16px;">Event Log</h3>
+        <div id="log" class="log"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=20260329r7"></script>
+</body>
+</html>
