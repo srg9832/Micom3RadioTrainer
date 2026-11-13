@@ -32,6 +32,9 @@ def public_state() -> dict[str, Any]:
                 'frequency': info.get('frequency', ''),
                 'band': info.get('band', 'USB'),
                 'mode': info.get('mode', 'SSB'),
+                'rx_frequency': info.get('rx_frequency'),
+                'tx_frequency': info.get('tx_frequency'),
+                'transmitting': info.get('transmitting', False),
             }
             for cid, info in clients.items()
         ],
@@ -107,6 +110,9 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             'frequency': frequency,
             'band': band,
             'mode': mode,
+            'rx_frequency': join_msg.get('rx_frequency'),
+            'tx_frequency': join_msg.get('tx_frequency'),
+            'transmitting': False,
         }
         channels[channel].add(client_id)
 
@@ -124,14 +130,14 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     continue
                 new_frequency = str(data.get('frequency', '')).strip()[:32]
                 old_channel = clients[client_id]['channel']
-                if old_channel == new_channel:
-                    continue
                 channels[old_channel].discard(client_id)
                 if not channels[old_channel]:
                     channels.pop(old_channel, None)
                 channels[new_channel].add(client_id)
                 clients[client_id]['channel'] = new_channel
                 clients[client_id]['frequency'] = new_frequency
+                clients[client_id]['rx_frequency'] = data.get('rx_frequency')
+                clients[client_id]['tx_frequency'] = data.get('tx_frequency')
                 await broadcast({'type': 'peer-left', 'peer_id': client_id, 'channel': old_channel})
                 await broadcast(public_state())
 
@@ -139,6 +145,8 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 clients[client_id]['frequency'] = str(data.get('frequency', clients[client_id].get('frequency', '')))[:32]
                 clients[client_id]['band'] = str(data.get('band', clients[client_id].get('band', 'USB')))[:8]
                 clients[client_id]['mode'] = str(data.get('mode', clients[client_id].get('mode', 'SSB')))[:8]
+                clients[client_id]['rx_frequency'] = data.get('rx_frequency', clients[client_id].get('rx_frequency'))
+                clients[client_id]['tx_frequency'] = data.get('tx_frequency', clients[client_id].get('tx_frequency'))
                 await broadcast(public_state())
 
             elif msg_type == 'signal':
@@ -150,6 +158,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 
             elif msg_type == 'ptt':
                 transmitting = bool(data.get('transmitting', False))
+                clients[client_id]['transmitting'] = transmitting
                 channel = clients[client_id]['channel']
                 await broadcast({
                     'type': 'ptt',
