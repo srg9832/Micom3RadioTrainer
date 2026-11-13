@@ -130,15 +130,17 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     continue
                 new_frequency = str(data.get('frequency', '')).strip()[:32]
                 old_channel = clients[client_id]['channel']
-                channels[old_channel].discard(client_id)
-                if not channels[old_channel]:
-                    channels.pop(old_channel, None)
-                channels[new_channel].add(client_id)
+                if old_channel != new_channel:
+                    channels[old_channel].discard(client_id)
+                    if not channels[old_channel]:
+                        channels.pop(old_channel, None)
+                    channels[new_channel].add(client_id)
                 clients[client_id]['channel'] = new_channel
                 clients[client_id]['frequency'] = new_frequency
                 clients[client_id]['rx_frequency'] = data.get('rx_frequency')
                 clients[client_id]['tx_frequency'] = data.get('tx_frequency')
-                await broadcast({'type': 'peer-left', 'peer_id': client_id, 'channel': old_channel})
+                if old_channel != new_channel:
+                    await broadcast({'type': 'peer-left', 'peer_id': client_id, 'channel': old_channel})
                 await broadcast(public_state())
 
             elif msg_type == 'update-config':
