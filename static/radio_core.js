@@ -59,8 +59,9 @@
 
   function normalizedRemote(client) {
     const legacy = parseFrequency(client.frequency);
-    const rx = Object.hasOwn(client, 'rx_frequency') ? client.rx_frequency : legacy;
-    const tx = Object.hasOwn(client, 'tx_frequency') ? client.tx_frequency : legacy;
+    const splitTuning = Number.isInteger(client.rx_frequency) || Number.isInteger(client.tx_frequency);
+    const rx = splitTuning ? client.rx_frequency : legacy;
+    const tx = splitTuning ? client.tx_frequency : legacy;
     return { rxHz: rx, txHz: tx, band: client.band, mode: client.mode };
   }
 
