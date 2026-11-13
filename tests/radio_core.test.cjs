@@ -29,4 +29,5 @@ assert.deepEqual(radio.nextProgrammedChannel(1,-1,{1:'x',2:'y',4:'z'}),4);
 assert.equal(radio.nextProgrammedChannel(1,1,{}),null);
 assert.equal(radio.normalizedRemote({frequency:'14,000.00',band:'USB',mode:'SSB'}).rxHz,14000000);
 assert.equal(radio.normalizedRemote({rx_frequency:null,tx_frequency:14000000,frequency:'14,000.00'}).rxHz,null);
+assert.equal(radio.normalizedRemote({rx_frequency:null,tx_frequency:null,frequency:'14,000.00'}).rxHz,14000000);
 console.log('radio_core tests passed');
