@@ -1,4 +1,7 @@
 
+const RadioCore = window.MicomRadioCore;
+if (!RadioCore) throw new Error('radio_core.js did not load');
+
 const connectionStatus = document.getElementById('connectionStatus');
 const sideMode = document.getElementById('sideMode');
 const connectButton = document.getElementById('connectButton');
@@ -77,6 +80,8 @@ const state = {
   mode: 'SSB',
   bandwidth: '2.7',
   flashText: '',
+  vfo: { type: 'SMPX', rxHz: 14000000, txHz: 14000000 },
+  freqSetup: null,
 };
 
 const channelFreqs = {
@@ -140,12 +145,24 @@ function currentFrequencyValue() {
   return frequencyValueForChannel(currentChannel);
 }
 
-function matchesCurrentTuning(client) {
-  return client.frequency === currentFrequencyValue() && client.band === state.band && client.mode === state.mode;
+function currentTuning() {
+  const tuning = state.lastDefaultMode === 'freq-default'
+    ? state.vfo
+    : RadioCore.makeTuning('SMPX', RadioCore.parseFrequency(frequencyValueForChannel(currentChannel)),
+      RadioCore.parseFrequency(frequencyValueForChannel(currentChannel)));
+  return { rxHz: tuning?.rxHz ?? null, txHz: tuning?.txHz ?? null,
+    band: state.band, mode: state.mode };
 }
 
+function remoteTuning(client) { return RadioCore.normalizedRemote(client); }
+function matchesCurrentTuning(client) {
+  return RadioCore.canReceive(currentTuning(), remoteTuning(client));
+}
+function connectsCurrentTuning(client) {
+  return RadioCore.canConnect(currentTuning(), remoteTuning(client));
+}
 function membersOnSameFrequency() {
-  return knownClients.filter(c => c.frequency === currentFrequencyValue());
+  return knownClients.filter(c => c.id === myId || connectsCurrentTuning(c));
 }
 
 function renderPeers() {
@@ -212,6 +229,8 @@ function peerConfigPayload() {
     frequency: currentFrequencyValue(),
     band: state.band,
     mode: state.mode,
+    rx_frequency: currentTuning().rxHz,
+    tx_frequency: currentTuning().txHz,
   };
 }
 
@@ -273,6 +292,10 @@ async function handleMessage(msg) {
     case 'state':
       knownClients = msg.clients || [];
       await syncPeersForCurrentTuning();
+      for (const client of knownClients) {
+        const peer = peers.get(client.id);
+        if (peer) peer.transmitting = !!client.transmitting;
+      }
       renderPeers();
       updateAudioRouting();
       break;
@@ -295,7 +318,7 @@ async function handleMessage(msg) {
 }
 
 function getMembersOnCurrentTuning() {
-  return knownClients.filter(c => c.id !== myId && matchesCurrentTuning(c));
+  return knownClients.filter(c => c.id !== myId && connectsCurrentTuning(c));
 }
 
 async function syncPeersForCurrentTuning() {
@@ -313,7 +336,7 @@ async function syncPeersForCurrentTuning() {
 
 async function createPeer(peerId, shouldInitiate) {
   const pc = new RTCPeerConnection(rtcConfig);
-  peers.set(peerId, { pc, transmitting: false });
+  peers.set(peerId, { pc, transmitting: false, pendingCandidates: [] });
   for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
 
   pc.onicecandidate = (event) => {
@@ -355,15 +378,26 @@ async function handleSignal(fromPeerId, payload) {
   const pc = entry.pc;
   if (payload.type === 'offer') {
     await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+    await flushIceCandidates(entry);
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     sendSignal(fromPeerId, { type: 'answer', sdp: pc.localDescription });
   } else if (payload.type === 'answer') {
     await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+    await flushIceCandidates(entry);
   } else if (payload.type === 'candidate' && payload.candidate) {
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
-    } catch (_) {}
+    if (!pc.remoteDescription) entry.pendingCandidates.push(payload.candidate);
+    else {
+      try { await pc.addIceCandidate(new RTCIceCandidate(payload.candidate)); }
+      catch (err) { log('ICE candidate error: ' + (err.message || err)); }
+    }
+  }
+}
+
+async function flushIceCandidates(entry) {
+  for (const candidate of entry.pendingCandidates.splice(0)) {
+    try { await entry.pc.addIceCandidate(new RTCIceCandidate(candidate)); }
+    catch (err) { log('ICE candidate error: ' + (err.message || err)); }
   }
 }
 
@@ -421,6 +455,10 @@ function updateAudioRouting() {
 
 function setTransmitState(active) {
   if (!localTrack || !isConnected || !isPoweredOn) return;
+  if (active && !RadioCore.validTransmit(currentTuning().txHz)) {
+    flashMessage('RX ONLY');
+    return;
+  }
   if (isTransmitting === active) return;
   isTransmitting = active;
   localTrack.enabled = active;
@@ -432,21 +470,95 @@ function setTransmitState(active) {
 }
 
 async function switchChannel(newChannel) {
-  const next = Math.min(500, Math.max(1, newChannel));
-  if (next === currentChannel) return;
-  setTransmitState(false);
-  currentChannel = next;
-  state.tempDigits = '';
-  cleanupAllPeers();
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'switch-channel', channel: currentChannel, frequency: currentFrequencyValue() }));
+  if (!Number.isInteger(newChannel) || newChannel < 1 || newChannel > RadioCore.MAX_CHANNEL ||
+      !Object.hasOwn(channelFreqs, newChannel)) {
+    flashMessage('NOT PROG');
+    return false;
   }
+  if (newChannel === currentChannel && state.lastDefaultMode === 'chan-default') return true;
+  setTransmitState(false);
+  currentChannel = newChannel;
+  state.lastDefaultMode = 'chan-default';
+  state.tempDigits = '';
   sendConfigUpdate();
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'switch-channel', channel: currentChannel, ...peerConfigPayload() }));
+  }
   await syncPeersForCurrentTuning();
-  log(`Switched to Channel ${currentChannel}.`);
+  log('Switched to Channel ' + currentChannel + '.');
   renderPeers();
   updateAudioRouting();
   updateLcd();
+  return true;
+}
+
+function startFrequencySetup() {
+  const previous = state.vfo;
+  state.freqSetup = { type: previous.type, rxHz: previous.rxHz, txHz: previous.txHz,
+    step: previous.type === 'TXO' ? 'tx' : 'rx', input: '' };
+  state.screen = 'freq-setup';
+  state.channelSoftkeyPage = 0;
+  clearMenuTimer();
+  updateLcd();
+}
+
+function selectFrequencyType(index) {
+  const type = ['SMPX', 'DPLX', 'RXO', 'TXO'][index - 1];
+  if (!type || !state.freqSetup) return;
+  state.freqSetup.type = type;
+  state.freqSetup.step = type === 'TXO' ? 'tx' : 'rx';
+  state.freqSetup.input = '';
+  updateLcd();
+}
+
+function appendFrequencyDigit(digit) {
+  const setup = state.freqSetup;
+  if (!setup) return;
+  const value = setup.input + digit;
+  if (/^\d{1,5}(?:\.\d{0,2})?$/.test(value)) setup.input = value;
+  updateLcd();
+}
+
+function appendFrequencyDecimal() {
+  const setup = state.freqSetup;
+  if (!setup || setup.input.includes('.')) return;
+  setup.input = (setup.input || '0') + '.';
+  updateLcd();
+}
+
+async function confirmFrequencySetup() {
+  const setup = state.freqSetup;
+  if (!setup) return;
+  const value = setup.input ? RadioCore.parseFrequency(setup.input) : setup[setup.step + 'Hz'];
+  const isTx = setup.step === 'tx';
+  if (value === null || !(isTx ? RadioCore.validTransmit(value) :
+      (setup.type === 'SMPX' ? RadioCore.validTransmit(value) : RadioCore.validReceive(value)))) {
+    flashMessage('INVALID FREQ');
+    return;
+  }
+  setup[setup.step + 'Hz'] = value;
+  setup.input = '';
+  if (setup.type === 'DPLX' && setup.step === 'rx') {
+    setup.step = 'tx';
+    updateLcd();
+    return;
+  }
+  const tuning = RadioCore.makeTuning(setup.type, setup.rxHz, setup.txHz);
+  if (!tuning) { flashMessage('INVALID FREQ'); return; }
+  setTransmitState(false);
+  state.vfo = tuning;
+  state.freqSetup = null;
+  state.lastDefaultMode = 'freq-default';
+  state.screen = 'freq-default';
+  state.channelSoftkeyPage = 0;
+  state.softkeyContext = 'channel';
+  sendConfigUpdate();
+  await syncPeersForCurrentTuning();
+  renderPeers();
+  updateAudioRouting();
+  updateLcd();
+  log('Frequency mode: ' + tuning.type + ' RX ' + RadioCore.formatFrequency(tuning.rxHz) +
+      ' TX ' + RadioCore.formatFrequency(tuning.txHz));
 }
 
 function clearMenuTimer() {
