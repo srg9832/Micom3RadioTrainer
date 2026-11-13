@@ -1,0 +1,24 @@
+name: R8 radio trainer tests
+
+on:
+  push:
+    branches: [manual-phase1]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements-dev.txt
+      - run: node --check static/radio_core.js
+      - run: node --check static/app.js
+      - run: node tests/radio_core.test.cjs
+      - run: node tests/ui_smoke.test.cjs
+      - run: python -m pytest -q tests/test_server.py

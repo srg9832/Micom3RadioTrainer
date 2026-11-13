@@ -1,4 +1,7 @@
 
+const RadioCore = window.MicomRadioCore;
+if (!RadioCore) throw new Error('radio_core.js did not load');
+
 const connectionStatus = document.getElementById('connectionStatus');
 const sideMode = document.getElementById('sideMode');
 const connectButton = document.getElementById('connectButton');
@@ -77,6 +80,8 @@ const state = {
   mode: 'SSB',
   bandwidth: '2.7',
   flashText: '',
+  vfo: { type: 'SMPX', rxHz: 14000000, txHz: 14000000 },
+  freqSetup: null,
 };
 
 const channelFreqs = {
@@ -137,15 +142,30 @@ function frequencyForChannel(channel) {
 }
 
 function currentFrequencyValue() {
+  if (state.lastDefaultMode === 'freq-default') {
+    return RadioCore.formatFrequency(state.vfo.rxHz ?? state.vfo.txHz);
+  }
   return frequencyValueForChannel(currentChannel);
 }
 
-function matchesCurrentTuning(client) {
-  return client.frequency === currentFrequencyValue() && client.band === state.band && client.mode === state.mode;
+function currentTuning() {
+  const tuning = state.lastDefaultMode === 'freq-default'
+    ? state.vfo
+    : RadioCore.makeTuning('SMPX', RadioCore.parseFrequency(frequencyValueForChannel(currentChannel)),
+      RadioCore.parseFrequency(frequencyValueForChannel(currentChannel)));
+  return { rxHz: tuning?.rxHz ?? null, txHz: tuning?.txHz ?? null,
+    band: state.band, mode: state.mode };
 }
 
+function remoteTuning(client) { return RadioCore.normalizedRemote(client); }
+function matchesCurrentTuning(client) {
+  return RadioCore.canReceive(currentTuning(), remoteTuning(client));
+}
+function connectsCurrentTuning(client) {
+  return RadioCore.canConnect(currentTuning(), remoteTuning(client));
+}
 function membersOnSameFrequency() {
-  return knownClients.filter(c => c.frequency === currentFrequencyValue());
+  return knownClients.filter(c => c.id === myId || connectsCurrentTuning(c));
 }
 
 function renderPeers() {
@@ -212,6 +232,8 @@ function peerConfigPayload() {
     frequency: currentFrequencyValue(),
     band: state.band,
     mode: state.mode,
+    rx_frequency: currentTuning().rxHz,
+    tx_frequency: currentTuning().txHz,
   };
 }
 
@@ -273,6 +295,10 @@ async function handleMessage(msg) {
     case 'state':
       knownClients = msg.clients || [];
       await syncPeersForCurrentTuning();
+      for (const client of knownClients) {
+        const peer = peers.get(client.id);
+        if (peer) peer.transmitting = !!client.transmitting;
+      }
       renderPeers();
       updateAudioRouting();
       break;
@@ -295,7 +321,7 @@ async function handleMessage(msg) {
 }
 
 function getMembersOnCurrentTuning() {
-  return knownClients.filter(c => c.id !== myId && matchesCurrentTuning(c));
+  return knownClients.filter(c => c.id !== myId && connectsCurrentTuning(c));
 }
 
 async function syncPeersForCurrentTuning() {
@@ -313,7 +339,7 @@ async function syncPeersForCurrentTuning() {
 
 async function createPeer(peerId, shouldInitiate) {
   const pc = new RTCPeerConnection(rtcConfig);
-  peers.set(peerId, { pc, transmitting: false });
+  peers.set(peerId, { pc, transmitting: false, pendingCandidates: [] });
   for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
 
   pc.onicecandidate = (event) => {
@@ -355,15 +381,26 @@ async function handleSignal(fromPeerId, payload) {
   const pc = entry.pc;
   if (payload.type === 'offer') {
     await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+    await flushIceCandidates(entry);
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     sendSignal(fromPeerId, { type: 'answer', sdp: pc.localDescription });
   } else if (payload.type === 'answer') {
     await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+    await flushIceCandidates(entry);
   } else if (payload.type === 'candidate' && payload.candidate) {
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
-    } catch (_) {}
+    if (!pc.remoteDescription) entry.pendingCandidates.push(payload.candidate);
+    else {
+      try { await pc.addIceCandidate(new RTCIceCandidate(payload.candidate)); }
+      catch (err) { log('ICE candidate error: ' + (err.message || err)); }
+    }
+  }
+}
+
+async function flushIceCandidates(entry) {
+  for (const candidate of entry.pendingCandidates.splice(0)) {
+    try { await entry.pc.addIceCandidate(new RTCIceCandidate(candidate)); }
+    catch (err) { log('ICE candidate error: ' + (err.message || err)); }
   }
 }
 
@@ -421,6 +458,10 @@ function updateAudioRouting() {
 
 function setTransmitState(active) {
   if (!localTrack || !isConnected || !isPoweredOn) return;
+  if (active && !RadioCore.validTransmit(currentTuning().txHz)) {
+    flashMessage('RX ONLY');
+    return;
+  }
   if (isTransmitting === active) return;
   isTransmitting = active;
   localTrack.enabled = active;
@@ -432,21 +473,95 @@ function setTransmitState(active) {
 }
 
 async function switchChannel(newChannel) {
-  const next = Math.min(500, Math.max(1, newChannel));
-  if (next === currentChannel) return;
-  setTransmitState(false);
-  currentChannel = next;
-  state.tempDigits = '';
-  cleanupAllPeers();
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'switch-channel', channel: currentChannel, frequency: currentFrequencyValue() }));
+  if (!Number.isInteger(newChannel) || newChannel < 1 || newChannel > RadioCore.MAX_CHANNEL ||
+      !Object.hasOwn(channelFreqs, newChannel)) {
+    flashMessage('NOT PROG');
+    return false;
   }
+  if (newChannel === currentChannel && state.lastDefaultMode === 'chan-default') return true;
+  setTransmitState(false);
+  currentChannel = newChannel;
+  state.lastDefaultMode = 'chan-default';
+  state.tempDigits = '';
   sendConfigUpdate();
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'switch-channel', channel: currentChannel, ...peerConfigPayload() }));
+  }
   await syncPeersForCurrentTuning();
-  log(`Switched to Channel ${currentChannel}.`);
+  log('Switched to Channel ' + currentChannel + '.');
   renderPeers();
   updateAudioRouting();
   updateLcd();
+  return true;
+}
+
+function startFrequencySetup() {
+  const previous = state.vfo;
+  state.freqSetup = { type: previous.type, rxHz: previous.rxHz, txHz: previous.txHz,
+    step: previous.type === 'TXO' ? 'tx' : 'rx', input: '' };
+  state.screen = 'freq-setup';
+  state.channelSoftkeyPage = 0;
+  clearMenuTimer();
+  updateLcd();
+}
+
+function selectFrequencyType(index) {
+  const type = ['SMPX', 'DPLX', 'RXO', 'TXO'][index - 1];
+  if (!type || !state.freqSetup) return;
+  state.freqSetup.type = type;
+  state.freqSetup.step = type === 'TXO' ? 'tx' : 'rx';
+  state.freqSetup.input = '';
+  updateLcd();
+}
+
+function appendFrequencyDigit(digit) {
+  const setup = state.freqSetup;
+  if (!setup) return;
+  const value = setup.input + digit;
+  if (/^\d{1,5}(?:\.\d{0,2})?$/.test(value)) setup.input = value;
+  updateLcd();
+}
+
+function appendFrequencyDecimal() {
+  const setup = state.freqSetup;
+  if (!setup || setup.input.includes('.')) return;
+  setup.input = (setup.input || '0') + '.';
+  updateLcd();
+}
+
+async function confirmFrequencySetup() {
+  const setup = state.freqSetup;
+  if (!setup) return;
+  const value = setup.input ? RadioCore.parseFrequency(setup.input) : setup[setup.step + 'Hz'];
+  const isTx = setup.step === 'tx';
+  if (value === null || !(isTx ? RadioCore.validTransmit(value) :
+      (setup.type === 'SMPX' ? RadioCore.validTransmit(value) : RadioCore.validReceive(value)))) {
+    flashMessage('INVALID FREQ');
+    return;
+  }
+  setup[setup.step + 'Hz'] = value;
+  setup.input = '';
+  if (setup.type === 'DPLX' && setup.step === 'rx') {
+    setup.step = 'tx';
+    updateLcd();
+    return;
+  }
+  const tuning = RadioCore.makeTuning(setup.type, setup.rxHz, setup.txHz);
+  if (!tuning) { flashMessage('INVALID FREQ'); return; }
+  setTransmitState(false);
+  state.vfo = tuning;
+  state.freqSetup = null;
+  state.lastDefaultMode = 'freq-default';
+  state.screen = 'freq-default';
+  state.channelSoftkeyPage = 0;
+  state.softkeyContext = 'channel';
+  sendConfigUpdate();
+  await syncPeersForCurrentTuning();
+  renderPeers();
+  updateAudioRouting();
+  updateLcd();
+  log('Frequency mode: ' + tuning.type + ' RX ' + RadioCore.formatFrequency(tuning.rxHz) +
+      ' TX ' + RadioCore.formatFrequency(tuning.txHz));
 }
 
 function clearMenuTimer() {
@@ -579,6 +694,10 @@ function menuSelection() {
 
 function enterMenuSelection() {
   const selected = menuSelection();
+  if (selected === 'FREQ') {
+    startFrequencySetup();
+    return;
+  }
   if (selected === 'CHAN') {
     state.screen = 'chan-function-display';
     state.tempDigits = '';
@@ -646,6 +765,10 @@ function clearExplicitIndicators() {
 
 function defaultSoftkeys() {
   if (state.softkeyContext === 'dsp1') return DSP_PAGE_1;
+  if (state.screen === 'freq-default' && state.channelSoftkeyPage === 0)
+    return ['T/R', 'BAND', 'SQ', 'DSP'];
+  if (state.screen === 'freq-default' && state.channelSoftkeyPage === 2)
+    return ['RCLV', 'STOR', '<--', '-->'];
   return CHANNEL_SOFTKEY_PAGES[state.channelSoftkeyPage];
 }
 
@@ -712,16 +835,21 @@ function updateLcd() {
     hideScreenMessage();
   }
 
-  if (state.screen === 'chan-default') {
+  if (state.screen === 'chan-default' || state.screen === 'freq-default') {
+    const isFrequency = state.screen === 'freq-default';
     lcdDivider.style.display = '';
-    state.lastDefaultMode = 'chan-default';
+    state.lastDefaultMode = isFrequency ? 'freq-default' : 'chan-default';
     const labels = defaultSoftkeys();
-    lcdTopLeft.textContent = 'CH';
-    lcdTopRight.textContent = `${currentChannel}`;
+    lcdTopLeft.textContent = isFrequency ? 'FREQ' : 'CH';
+    lcdTopRight.textContent = isFrequency ? '' : String(currentChannel);
     if (flashActive && state.flashText) {
       showFlashInFrequencyArea(state.flashText);
     } else {
-      showFrequencyArea(frequencyForChannel(currentChannel));
+      if (isFrequency) {
+        const tuning = state.vfo;
+        const prefix = tuning.type === 'TXO' ? 'T' : (tuning.type === 'DPLX' || tuning.type === 'RXO') ? 'R' : 'F';
+        showFrequencyArea(prefix + ' ' + RadioCore.formatFrequency(tuning.type === 'TXO' ? tuning.txHz : tuning.rxHz));
+      } else showFrequencyArea(frequencyForChannel(currentChannel));
     }
     clearSecondaryLines();
     lcdBand.textContent = state.band;
@@ -731,6 +859,26 @@ function updateLcd() {
     lcdBottom3.textContent = '';
     setExplicitIndicators();
     setSoftkeys(labels);
+    return;
+  }
+
+  if (state.screen === 'freq-setup') {
+    const setup = state.freqSetup;
+    const current = setup.input || RadioCore.formatFrequency(setup[setup.step + 'Hz']);
+    const prefix = setup.type === 'SMPX' ? 'F' : setup.step === 'rx' ? 'R' : 'T';
+    lcdDivider.style.display = '';
+    lcdTopLeft.textContent = setup.type;
+    lcdTopRight.textContent = '';
+    if (flashActive && state.flashText) showFlashInFrequencyArea(state.flashText);
+    else showFrequencyArea(prefix + ' ' + current);
+    clearSecondaryLines();
+    lcdBand.textContent = state.band;
+    lcdCenter.textContent = '';
+    lcdBottom1.textContent = '';
+    lcdBottom2.textContent = '';
+    lcdBottom3.textContent = '';
+    setExplicitIndicators();
+    setSoftkeys(setup.input ? ['', '', 'BACK', 'CLR'] : ['SMPX', 'DPLX', 'RXO', 'TXO']);
     return;
   }
 
@@ -769,8 +917,8 @@ function updateLcd() {
 
   if (state.screen === 'mode-select') {
     lcdDivider.style.display = '';
-    lcdTopLeft.textContent = 'CH';
-    lcdTopRight.textContent = `${currentChannel}`;
+    lcdTopLeft.textContent = state.lastDefaultMode === 'freq-default' ? 'FREQ' : 'CH';
+    lcdTopRight.textContent = state.lastDefaultMode === 'freq-default' ? '' : String(currentChannel);
     showFrequencyArea(`MODE: ${state.mode}`);
     clearSecondaryLines();
     lcdBand.textContent = '';
@@ -824,6 +972,8 @@ async function handleDefaultSoftkey(index) {
     log(`${label} pressed. Function not implemented yet.`);
     return;
   }
+
+  if (label === 'T/R') { startFrequencySetup(); return; }
 
   if (label === 'BAND') {
     state.band = nextValue(state.band, BAND_LEVELS);
@@ -896,10 +1046,14 @@ function enterChannelSelectFromKeypad(digit) {
 async function confirmChannelSelect() {
   if (state.screen !== 'chan-function-display') return;
   const parsed = parseInt(state.tempDigits, 10);
-  if (!Number.isNaN(parsed) && parsed >= 1 && parsed <= 500) {
+  if (!Number.isNaN(parsed) && parsed >= 1 && parsed <= RadioCore.MAX_CHANNEL &&
+      Object.hasOwn(channelFreqs, parsed)) {
     await switchChannel(parsed);
+    leaveToDefault();
+  } else {
+    leaveToDefault();
+    flashMessage('NOT PROG');
   }
-  leaveToDefault();
 }
 
 async function selectMode(index) {
@@ -936,7 +1090,15 @@ async function handleFKey(index) {
     selectBandwidth(index);
     return;
   }
-  if (state.screen === 'chan-default') {
+  if (state.screen === 'freq-setup') {
+    if (state.freqSetup.input) {
+      if (index === 3) state.freqSetup.input = state.freqSetup.input.slice(0, -1);
+      if (index === 4) state.freqSetup.input = '';
+      updateLcd();
+    } else selectFrequencyType(index);
+    return;
+  }
+  if (state.screen === 'chan-default' || state.screen === 'freq-default') {
     await handleDefaultSoftkey(index);
   }
 }
@@ -949,6 +1111,8 @@ async function handleAction(action) {
     const digit = action.replace('digit-', '');
     if (state.screen === 'chan-function-display') {
       enterChannelSelectFromKeypad(digit);
+    } else if (state.screen === 'freq-setup') {
+      appendFrequencyDigit(digit);
     }
     return;
   }
@@ -958,21 +1122,23 @@ async function handleAction(action) {
       openMenu();
       break;
     case 'esc':
+      state.freqSetup = null;
       leaveToDefault();
       break;
     case 'enter':
       if (state.screen === 'menu') enterMenuSelection();
       else if (state.screen === 'chan-function-display') await confirmChannelSelect();
+      else if (state.screen === 'freq-setup') await confirmFrequencySetup();
       break;
     case 'up':
-      if (state.screen === 'chan-default') await switchChannel(currentChannel + 1);
+      if (state.screen === 'chan-default') await switchChannel(RadioCore.nextProgrammedChannel(currentChannel, 1, channelFreqs));
       else if (state.screen === 'menu') {
         state.menuCursor = (state.menuCursor + MENU_PAGES[state.menuPage].length - 1) % MENU_PAGES[state.menuPage].length;
         updateLcd();
       }
       break;
     case 'down':
-      if (state.screen === 'chan-default') await switchChannel(currentChannel - 1);
+      if (state.screen === 'chan-default') await switchChannel(RadioCore.nextProgrammedChannel(currentChannel, -1, channelFreqs));
       else if (state.screen === 'menu') {
         state.menuCursor = (state.menuCursor + 1) % MENU_PAGES[state.menuPage].length;
         updateLcd();
@@ -980,7 +1146,7 @@ async function handleAction(action) {
       break;
     case 'right':
     case 'more':
-      if (state.screen === 'chan-default') {
+      if (state.screen === 'chan-default' || state.screen === 'freq-default') {
         cycleChannelSoftkeys(1);
       } else if (state.screen === 'menu') {
         state.menuPage = (state.menuPage + 1) % MENU_PAGES.length;
@@ -989,7 +1155,7 @@ async function handleAction(action) {
       }
       break;
     case 'left':
-      if (state.screen === 'chan-default') {
+      if (state.screen === 'chan-default' || state.screen === 'freq-default') {
         cycleChannelSoftkeys(-1);
       } else if (state.screen === 'menu') {
         state.menuPage = (state.menuPage + MENU_PAGES.length - 1) % MENU_PAGES.length;
@@ -1008,6 +1174,9 @@ async function handleAction(action) {
       break;
     case 'f4':
       await handleFKey(4);
+      break;
+    case 'digit-dot':
+      if (state.screen === 'freq-setup') appendFrequencyDecimal();
       break;
     case 'noop':
       break;
@@ -1048,7 +1217,7 @@ hotspotButtons.forEach(btn => {
   });
 });
 
-log('Communication logic build R7 loaded.');
+log('Manual-guided frequency build R8 loaded.');
 renderPeers();
 updateAudioRouting();
 updateLcd();
