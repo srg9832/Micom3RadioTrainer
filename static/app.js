@@ -142,6 +142,9 @@ function frequencyForChannel(channel) {
 }
 
 function currentFrequencyValue() {
+  if (state.lastDefaultMode === 'freq-default') {
+    return RadioCore.formatFrequency(state.vfo.rxHz ?? state.vfo.txHz);
+  }
   return frequencyValueForChannel(currentChannel);
 }
 
