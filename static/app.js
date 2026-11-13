@@ -691,6 +691,10 @@ function menuSelection() {
 
 function enterMenuSelection() {
   const selected = menuSelection();
+  if (selected === 'FREQ') {
+    startFrequencySetup();
+    return;
+  }
   if (selected === 'CHAN') {
     state.screen = 'chan-function-display';
     state.tempDigits = '';
@@ -758,6 +762,10 @@ function clearExplicitIndicators() {
 
 function defaultSoftkeys() {
   if (state.softkeyContext === 'dsp1') return DSP_PAGE_1;
+  if (state.screen === 'freq-default' && state.channelSoftkeyPage === 0)
+    return ['T/R', 'BAND', 'SQ', 'DSP'];
+  if (state.screen === 'freq-default' && state.channelSoftkeyPage === 2)
+    return ['RCLV', 'STOR', '<--', '-->'];
   return CHANNEL_SOFTKEY_PAGES[state.channelSoftkeyPage];
 }
 
@@ -824,16 +832,21 @@ function updateLcd() {
     hideScreenMessage();
   }
 
-  if (state.screen === 'chan-default') {
+  if (state.screen === 'chan-default' || state.screen === 'freq-default') {
+    const isFrequency = state.screen === 'freq-default';
     lcdDivider.style.display = '';
-    state.lastDefaultMode = 'chan-default';
+    state.lastDefaultMode = isFrequency ? 'freq-default' : 'chan-default';
     const labels = defaultSoftkeys();
-    lcdTopLeft.textContent = 'CH';
-    lcdTopRight.textContent = `${currentChannel}`;
+    lcdTopLeft.textContent = isFrequency ? 'FREQ' : 'CH';
+    lcdTopRight.textContent = isFrequency ? '' : String(currentChannel);
     if (flashActive && state.flashText) {
       showFlashInFrequencyArea(state.flashText);
     } else {
-      showFrequencyArea(frequencyForChannel(currentChannel));
+      if (isFrequency) {
+        const tuning = state.vfo;
+        const prefix = tuning.type === 'TXO' ? 'T' : tuning.type === 'DPLX' ? 'R' : 'F';
+        showFrequencyArea(prefix + ' ' + RadioCore.formatFrequency(tuning.type === 'TXO' ? tuning.txHz : tuning.rxHz));
+      } else showFrequencyArea(frequencyForChannel(currentChannel));
     }
     clearSecondaryLines();
     lcdBand.textContent = state.band;
@@ -843,6 +856,26 @@ function updateLcd() {
     lcdBottom3.textContent = '';
     setExplicitIndicators();
     setSoftkeys(labels);
+    return;
+  }
+
+  if (state.screen === 'freq-setup') {
+    const setup = state.freqSetup;
+    const current = setup.input || RadioCore.formatFrequency(setup[setup.step + 'Hz']);
+    const prefix = setup.type === 'SMPX' ? 'F' : setup.step === 'rx' ? 'R' : 'T';
+    lcdDivider.style.display = '';
+    lcdTopLeft.textContent = setup.type;
+    lcdTopRight.textContent = '';
+    if (flashActive && state.flashText) showFlashInFrequencyArea(state.flashText);
+    else showFrequencyArea(prefix + ' ' + current);
+    clearSecondaryLines();
+    lcdBand.textContent = state.band;
+    lcdCenter.textContent = '';
+    lcdBottom1.textContent = '';
+    lcdBottom2.textContent = '';
+    lcdBottom3.textContent = '';
+    setExplicitIndicators();
+    setSoftkeys(setup.input ? ['', '', 'BACK', 'CLR'] : ['SMPX', 'DPLX', 'RXO', 'TXO']);
     return;
   }
 
@@ -881,8 +914,8 @@ function updateLcd() {
 
   if (state.screen === 'mode-select') {
     lcdDivider.style.display = '';
-    lcdTopLeft.textContent = 'CH';
-    lcdTopRight.textContent = `${currentChannel}`;
+    lcdTopLeft.textContent = state.lastDefaultMode === 'freq-default' ? 'FREQ' : 'CH';
+    lcdTopRight.textContent = state.lastDefaultMode === 'freq-default' ? '' : String(currentChannel);
     showFrequencyArea(`MODE: ${state.mode}`);
     clearSecondaryLines();
     lcdBand.textContent = '';
@@ -936,6 +969,8 @@ async function handleDefaultSoftkey(index) {
     log(`${label} pressed. Function not implemented yet.`);
     return;
   }
+
+  if (label === 'T/R') { startFrequencySetup(); return; }
 
   if (label === 'BAND') {
     state.band = nextValue(state.band, BAND_LEVELS);
@@ -1008,10 +1043,14 @@ function enterChannelSelectFromKeypad(digit) {
 async function confirmChannelSelect() {
   if (state.screen !== 'chan-function-display') return;
   const parsed = parseInt(state.tempDigits, 10);
-  if (!Number.isNaN(parsed) && parsed >= 1 && parsed <= 500) {
+  if (!Number.isNaN(parsed) && parsed >= 1 && parsed <= RadioCore.MAX_CHANNEL &&
+      Object.hasOwn(channelFreqs, parsed)) {
     await switchChannel(parsed);
+    leaveToDefault();
+  } else {
+    leaveToDefault();
+    flashMessage('NOT PROG');
   }
-  leaveToDefault();
 }
 
 async function selectMode(index) {
@@ -1048,7 +1087,15 @@ async function handleFKey(index) {
     selectBandwidth(index);
     return;
   }
-  if (state.screen === 'chan-default') {
+  if (state.screen === 'freq-setup') {
+    if (state.freqSetup.input) {
+      if (index === 3) state.freqSetup.input = state.freqSetup.input.slice(0, -1);
+      if (index === 4) state.freqSetup.input = '';
+      updateLcd();
+    } else selectFrequencyType(index);
+    return;
+  }
+  if (state.screen === 'chan-default' || state.screen === 'freq-default') {
     await handleDefaultSoftkey(index);
   }
 }
@@ -1061,6 +1108,8 @@ async function handleAction(action) {
     const digit = action.replace('digit-', '');
     if (state.screen === 'chan-function-display') {
       enterChannelSelectFromKeypad(digit);
+    } else if (state.screen === 'freq-setup') {
+      appendFrequencyDigit(digit);
     }
     return;
   }
@@ -1070,21 +1119,23 @@ async function handleAction(action) {
       openMenu();
       break;
     case 'esc':
+      state.freqSetup = null;
       leaveToDefault();
       break;
     case 'enter':
       if (state.screen === 'menu') enterMenuSelection();
       else if (state.screen === 'chan-function-display') await confirmChannelSelect();
+      else if (state.screen === 'freq-setup') await confirmFrequencySetup();
       break;
     case 'up':
-      if (state.screen === 'chan-default') await switchChannel(currentChannel + 1);
+      if (state.screen === 'chan-default') await switchChannel(RadioCore.nextProgrammedChannel(currentChannel, 1, channelFreqs));
       else if (state.screen === 'menu') {
         state.menuCursor = (state.menuCursor + MENU_PAGES[state.menuPage].length - 1) % MENU_PAGES[state.menuPage].length;
         updateLcd();
       }
       break;
     case 'down':
-      if (state.screen === 'chan-default') await switchChannel(currentChannel - 1);
+      if (state.screen === 'chan-default') await switchChannel(RadioCore.nextProgrammedChannel(currentChannel, -1, channelFreqs));
       else if (state.screen === 'menu') {
         state.menuCursor = (state.menuCursor + 1) % MENU_PAGES[state.menuPage].length;
         updateLcd();
@@ -1092,7 +1143,7 @@ async function handleAction(action) {
       break;
     case 'right':
     case 'more':
-      if (state.screen === 'chan-default') {
+      if (state.screen === 'chan-default' || state.screen === 'freq-default') {
         cycleChannelSoftkeys(1);
       } else if (state.screen === 'menu') {
         state.menuPage = (state.menuPage + 1) % MENU_PAGES.length;
@@ -1101,7 +1152,7 @@ async function handleAction(action) {
       }
       break;
     case 'left':
-      if (state.screen === 'chan-default') {
+      if (state.screen === 'chan-default' || state.screen === 'freq-default') {
         cycleChannelSoftkeys(-1);
       } else if (state.screen === 'menu') {
         state.menuPage = (state.menuPage + MENU_PAGES.length - 1) % MENU_PAGES.length;
@@ -1120,6 +1171,9 @@ async function handleAction(action) {
       break;
     case 'f4':
       await handleFKey(4);
+      break;
+    case 'digit-dot':
+      if (state.screen === 'freq-setup') appendFrequencyDecimal();
       break;
     case 'noop':
       break;
@@ -1160,7 +1214,7 @@ hotspotButtons.forEach(btn => {
   });
 });
 
-log('Communication logic build R7 loaded.');
+log('Manual-guided frequency build R8 loaded.');
 renderPeers();
 updateAudioRouting();
 updateLcd();
