@@ -844,7 +844,7 @@ function updateLcd() {
     } else {
       if (isFrequency) {
         const tuning = state.vfo;
-        const prefix = tuning.type === 'TXO' ? 'T' : tuning.type === 'DPLX' ? 'R' : 'F';
+        const prefix = tuning.type === 'TXO' ? 'T' : (tuning.type === 'DPLX' || tuning.type === 'RXO') ? 'R' : 'F';
         showFrequencyArea(prefix + ' ' + RadioCore.formatFrequency(tuning.type === 'TXO' ? tuning.txHz : tuning.rxHz));
       } else showFrequencyArea(frequencyForChannel(currentChannel));
     }
